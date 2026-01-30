@@ -18,28 +18,19 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Edit the `main()` function in `multi_schema_data_fetcher.py`:
+### 1. export Meta Database Connection ENV Variables
 
-### 1. Configure Meta Database Connection
+ export META_DB_HOST=production-aurora-cluster.cluster-c6xqywhzdx3n.us-east-1.rds.amazonaws.com
+ export META_DB_USER=testrail-meta
+ export META_DB_PASSWORD=*********
+ export META_DB_USER=testrail_meta
 
-```python
-meta_db_config = {
-    'type': 'mysql',  # or 'postgres'
-    'params': {
-        'host': 'your_meta_db_host',
-        'user': 'your_meta_db_user',
-        'password': 'your_meta_db_password',
-        'database': 'meta',
-        'port': 3306
-    }
-}
-```
 
 ### 2. Define Your Data Query
 
 ```python
 data_query = """
-    SELECT * FROM your_table_name LIMIT 100
+    SELECT is_copy as copy, COUNT(*) as count from cases GROUP BY is_copy
 """
 ```
 
@@ -47,14 +38,8 @@ data_query = """
 
 ```python
 # Adjust max_workers based on your database server capacity
-fetcher = MultiSchemaFetcher(meta_db_config, max_workers=50)
+fetcher = MultiSchemaFetcher(meta_db_config, max_workers=10)
 ```
-
-**Recommended max_workers settings:**
-- For 10,000 schemas: Start with 50-100 workers
-- Monitor database server load and adjust accordingly
-- More workers = faster completion but higher load
-
 ## Usage
 
 ```bash
@@ -66,53 +51,12 @@ python multi_schema_data_fetcher.py
 The script generates:
 
 1. **Log file**: `schema_fetch_YYYYMMDD_HHMMSS.log` - Detailed execution log
-2. **Results file**: `schema_results.json` - JSON file containing:
+2. **Results files**: `schema_results.json` - JSON file containing:
    - Success/failure counts
    - Data from each schema
    - Error details for failed fetches
    - Execution statistics
 
-### Sample Output Structure
-
-```json
-{
-  "total_schemas": 10000,
-  "successful": 9950,
-  "failed": 50,
-  "duration_seconds": 245.67,
-  "results": [
-    {
-      "schema": "database_1",
-      "status": "success",
-      "row_count": 100,
-      "data": [...]
-    }
-  ],
-  "errors": [
-    {
-      "schema": "database_2",
-      "status": "error",
-      "error": "Connection timeout"
-    }
-  ]
-}
-```
-
-## Performance Considerations
-
-### For 10,000 Schemas:
-
-**Estimated time with different worker counts:**
-- 10 workers: ~2.8 hours (assuming 1 second per schema)
-- 50 workers: ~33 minutes
-- 100 workers: ~17 minutes
-- 200 workers: ~8.5 minutes
-
-**Recommendations:**
-1. Start with 50 workers and monitor performance
-2. Increase gradually if database servers can handle the load
-3. Consider database connection limits
-4. Monitor network bandwidth and latency
 
 ## Customization Examples
 
@@ -164,61 +108,3 @@ The script handles common errors:
 - Network issues
 
 All errors are logged with schema name and error details.
-
-## Troubleshooting
-
-### Issue: Too many connections error
-
-**Solution**: Reduce `max_workers` value
-
-### Issue: Slow performance
-
-**Solutions**:
-- Increase `max_workers` if database can handle it
-- Optimize your data query
-- Use `LIMIT` clauses to reduce data transfer
-- Check network latency
-
-### Issue: Memory issues
-
-**Solutions**:
-- Process results in batches
-- Don't load all data into memory at once
-- Stream results to disk
-
-### Issue: Connection timeouts
-
-**Solutions**:
-- Increase `connect_timeout` in `fetch_from_schema()`
-- Check network connectivity
-- Verify database server is responsive
-
-## Advanced Usage
-
-### Batch Processing
-
-If you need to process schemas in batches:
-
-```python
-credentials_list = fetcher.get_schema_credentials()
-batch_size = 1000
-
-for i in range(0, len(credentials_list), batch_size):
-    batch = credentials_list[i:i+batch_size]
-    # Process batch
-```
-
-### Different Queries per Schema
-
-Modify `fetch_from_schema()` to accept custom queries or use schema-specific logic.
-
-## Security Notes
-
-- Store database credentials securely (use environment variables or secret management)
-- Use read-only database users when possible
-- Implement connection pooling for production use
-- Consider using SSL/TLS for database connections
-
-## License
-
-MIT License - feel free to modify and use as needed.

@@ -14,6 +14,7 @@ import csv
 import os
 import json
 import threading
+import argparse
 
 # Configure logging
 logging.basicConfig(
@@ -63,7 +64,7 @@ class MultiSchemaFetcher:
                 database_servers.name as server_name
             FROM instances 
             JOIN database_servers ON instances.database_server_id = database_servers.replica_master_id 
-            WHERE is_active = 1 AND is_installed = 1 
+            WHERE is_active = 1 AND is_installed = 1 and instances.id in (408520, 611219)
         """
         
         try:
@@ -222,7 +223,7 @@ class MultiSchemaFetcher:
         except Exception as e:
             logger.error(f"Error writing progress file: {e}")
     
-    def fetch_all_schemas(self, query: str, group_column: str = None, output_dir: str = '.') -> Dict[str, Any]:
+    def fetch_all_schemas(self, query: str, group_column: str = None, output_dir: str = '.', single_file_name: str = None) -> Dict[str, Any]:
         """
         Fetch data from all schemas concurrently and stream directly to CSV files.
         
@@ -255,19 +256,25 @@ class MultiSchemaFetcher:
             
             row = {'schema': schema_name}
             row.update(data_row)
-            
-            if group_column:
-                group_value = data_row.get(group_column, 'unknown')
-            else:
+            # If a single output filename is requested, force a single group.
+            if single_file_name:
                 group_value = 'all'
+            else:
+                if group_column:
+                    group_value = data_row.get(group_column, 'unknown')
+                else:
+                    group_value = 'all'
             
             with lock:
                 # Initialize writer for this group on first row
                 if group_value not in group_writers:
-                    if group_column:
-                        filename = f"{group_column}_{group_value}.csv"
+                    if single_file_name:
+                        filename = single_file_name
                     else:
-                        filename = 'schema_results.csv'
+                        if group_column:
+                            filename = f"{group_column}_{group_value}.csv"
+                        else:
+                            filename = 'schema_results.csv'
                     
                     output_file = os.path.join(output_dir, filename)
                     open_files[group_value] = open(output_file, 'w', newline='')
@@ -363,7 +370,7 @@ class MultiSchemaFetcher:
         
         return summary
     
-    def save_results(self, summary: Dict[str, Any], group_column: str = None, output_dir: str = '.'):
+    def save_results(self, summary: Dict[str, Any], group_column: str = None, output_dir: str = '.', single_file_name: str = None):
         """Save results to CSV files, streaming data to avoid memory issues.
         
         Args:
@@ -396,18 +403,24 @@ class MultiSchemaFetcher:
                         row = {'schema': schema_name}
                         row.update(data_row)
                         
-                        # Determine group if specified
-                        if group_column:
-                            group_value = data_row.get(group_column, 'unknown')
-                        else:
+                        # Determine group if specified, or force single file
+                        if single_file_name:
                             group_value = 'all'
+                        else:
+                            if group_column:
+                                group_value = data_row.get(group_column, 'unknown')
+                            else:
+                                group_value = 'all'
                         
                         # Initialize writer for this group on first row
                         if group_value not in group_writers:
-                            if group_column:
-                                filename = f"{group_column}_{group_value}.csv"
+                            if single_file_name:
+                                filename = single_file_name
                             else:
-                                filename = 'schema_results.csv'
+                                if group_column:
+                                    filename = f"{group_column}_{group_value}.csv"
+                                else:
+                                    filename = 'schema_results.csv'
                             
                             output_file = os.path.join(output_dir, filename)
                             open_files[group_value] = open(output_file, 'w', newline='')
@@ -460,18 +473,60 @@ def main():
             'port': int(os.getenv('META_DB_PORT', 3306))
         }
     }
-    # The query you want to run on each schema
-    # Modify this to fetch the data you need
-    data_query = """
+    # The query you want to run on each schema. You can pass a custom SQL
+    # via `--query`, or use `--complex` to run the predefined complex query.
+    # The original query is preserved below (can be used as default or
+    # uncommented if desired):
+    # ORIGINAL (simple) QUERY:
+    # SELECT is_copy as copy, COUNT(*) as count from cases GROUP BY is_copy
+
+    parser = argparse.ArgumentParser(description='Fetch data from multiple schemas')
+    parser.add_argument('--query', help='SQL query to run on each schema')
+    parser.add_argument('--complex', action='store_true', help='Run predefined complex query (tests executed by year)')
+    parser.add_argument('--workers', type=int, default=10, help='Max concurrent workers')
+    parser.add_argument('--group-column', default=None, help='Column name to group CSV outputs by (default: copy, or year when using --complex)')
+    parser.add_argument('--output-dir', default='.', help='Directory to save CSV files')
+    args = parser.parse_args()
+
+    # Predefined complex query (counts tests executed per year across test_changes)
+    complex_query = """
+        SELECT YEAR(FROM_UNIXTIME(created_on)) AS year,
+               COUNT(*) AS tests_executed
+        FROM test_changes
+        GROUP BY year
+        ORDER BY year
+    """
+
+    # Choose query: explicit `--query` > `--complex` > default simple query
+    if args.query:
+        data_query = args.query
+    elif args.complex:
+        data_query = complex_query
+    else:
+        data_query = """
         SELECT is_copy as copy, COUNT(*) as count from cases GROUP BY is_copy
     """
+
+    # Determine effective group column: prefer explicit arg, otherwise
+    # default to `year` for the complex query and `copy` for the simple one.
+    # Also, if running the complex query without an explicit group column,
+    # write a single output file named `complex.csv` instead of per-group files.
+    single_file_name = None
+    if args.group_column is not None:
+        effective_group_column = args.group_column
+    else:
+        if args.complex:
+            # Use a single file for the predefined complex query
+            effective_group_column = None
+            single_file_name = 'complex.csv'
+        else:
+            effective_group_column = 'copy'
     
-    # Initialize fetcher with 50 concurrent workers
-    # Adjust based on your database server capacity
-    fetcher = MultiSchemaFetcher(meta_db_config, max_workers=10)
-    
+    # Initialize fetcher with requested concurrent workers
+    fetcher = MultiSchemaFetcher(meta_db_config, max_workers=args.workers)
+
     # Fetch data from all schemas and stream directly to CSV
-    summary = fetcher.fetch_all_schemas(data_query, group_column='copy')
+    summary = fetcher.fetch_all_schemas(data_query, group_column=effective_group_column, output_dir=args.output_dir, single_file_name=single_file_name)
     
     # Print summary
     print(f"\n{'='*60}")
