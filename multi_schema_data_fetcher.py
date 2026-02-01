@@ -68,11 +68,7 @@ class MultiSchemaFetcher:
         """
         
         try:
-            # Adjust connection method based on your meta DB type
-            if self.meta_db_config.get('type') == 'postgres':
-                conn = psycopg2.connect(**self.meta_db_config['params'])
-            else:  # Default to MySQL
-                conn = pymysql.connect(**self.meta_db_config['params'])
+            conn = pymysql.connect(**self.meta_db_config['params'])
             
             cursor = conn.cursor()
             cursor.execute(query)
@@ -466,11 +462,11 @@ def main():
     meta_db_config = {
         'type': 'mysql',
         'params': {
-            'host': os.getenv('META_DB_HOST', 'localhost'),
-            'user': os.getenv('META_DB_USER'),
-            'password': os.getenv('META_DB_PASSWORD'),
+            'host': os.getenv('MYSQL_HOST', 'localhost'),
+            'user': os.getenv('MYSQL_DB_USER'),
+            'password': os.getenv('MYSQL_DB_PASSWORD'),
             'database': 'testrail_meta',
-            'port': int(os.getenv('META_DB_PORT', 3306))
+            'port': int(os.getenv('MYSQL_DB_PORT', 3306))
         }
     }
     # The query you want to run on each schema. You can pass a custom SQL
